@@ -27,6 +27,8 @@ public final class PoolSizingBenchmark {
     private static final int TASKS_IN_FLIGHT = 1_000;
     private static final int ROW_COUNT = 1_000_000;
     private static final int RANGE_SIZE = 5_000;
+    private static final List<Integer> SWEEP_POOL_SIZES = List.of(20, 50, 100, 200, 400, 600, 800, 1_000);
+    private static final List<Integer> REFINE_POOL_SIZES = List.of(100, 200, 400, 1_000);
     private static final Duration WARMUP = Duration.ofSeconds(5);
     private static final Duration MEASUREMENT = Duration.ofSeconds(30);
     private static final String QUERY = "SELECT COUNT(*) FROM t WHERE id BETWEEN ? AND ? + 5000";
@@ -41,12 +43,7 @@ public final class PoolSizingBenchmark {
     public static void main(String[] args) throws Exception {
         waitForDatabase();
 
-        List<Scenario> scenarios = List.of(
-                new Scenario("Virtual threads, pool 20", ThreadType.VIRTUAL, 20),
-                new Scenario("Platform threads, pool 20", ThreadType.PLATFORM, 20),
-                new Scenario("Virtual threads, pool 1000", ThreadType.VIRTUAL, TASKS_IN_FLIGHT),
-                new Scenario("Platform threads, pool 1000", ThreadType.PLATFORM, TASKS_IN_FLIGHT)
-        );
+        List<Scenario> scenarios = scenariosFor(args);
 
         List<ScenarioResult> results = new ArrayList<>(scenarios.size());
         for (Scenario scenario : scenarios) {
@@ -60,6 +57,33 @@ public final class PoolSizingBenchmark {
         }
 
         printResults(results);
+    }
+
+    private static List<Scenario> scenariosFor(String[] args) {
+        if (args.length == 0) {
+            return List.of(
+                    new Scenario("Virtual threads, pool 20", ThreadType.VIRTUAL, 20),
+                    new Scenario("Platform threads, pool 20", ThreadType.PLATFORM, 20),
+                    new Scenario("Virtual threads, pool 1000", ThreadType.VIRTUAL, TASKS_IN_FLIGHT),
+                    new Scenario("Platform threads, pool 1000", ThreadType.PLATFORM, TASKS_IN_FLIGHT)
+            );
+        }
+
+        if (args.length == 1 && args[0].equals("--sweep")) {
+            return virtualThreadScenarios(SWEEP_POOL_SIZES);
+        }
+
+        if (args.length == 1 && args[0].equals("--refine")) {
+            return virtualThreadScenarios(REFINE_POOL_SIZES);
+        }
+
+        throw new IllegalArgumentException("Usage: java -jar virtual-thread-pool-sizing-1.0.0.jar [--sweep|--refine]");
+    }
+
+    private static List<Scenario> virtualThreadScenarios(List<Integer> poolSizes) {
+        return poolSizes.stream()
+                .map(poolSize -> new Scenario("Virtual threads, pool " + poolSize, ThreadType.VIRTUAL, poolSize))
+                .toList();
     }
 
     private static ScenarioResult runScenario(Scenario scenario) throws Exception {

@@ -31,6 +31,33 @@ docker compose up -d && mvn package && java -jar target/virtual-thread-pool-sizi
 
 The benchmark waits up to two minutes for PostgreSQL to finish starting and loading the fixture. The first `docker compose up` creates the table and loads one million rows; later runs reuse the named volume. Stop PostgreSQL with `docker compose down`, or remove the database volume too with `docker compose down -v` to recreate the fixture next time.
 
+To sweep virtual-thread pool sizes while holding 1,000 tasks in flight, run:
+
+```sh
+java -jar target/virtual-thread-pool-sizing-1.0.0.jar --sweep
+```
+
+The sweep tests pool sizes 20, 50, 100, 200, 400, 600, 800, and 1,000, with the same 5-second warmup and 30-second measurement per size. It takes about five minutes after the database is ready.
+
+To recheck the likely plateau candidates (100, 200, 400, and 1,000), run the same benchmark with `--refine`.
+
+## Pool-size sweep results
+
+Two full sweeps tested all eight pool sizes; a third refinement run retested 100, 200, 400, and 1,000. Each run used the same 5-second warmup and 30-second measurement. Values below are requests per second; the mean is over two runs for pool sizes 20, 50, 600, and 800, and three runs for the refined sizes.
+
+| Pool size | Full sweep 1 | Full sweep 2 | Refine run | Mean TPS |
+| ---: | ---: | ---: | ---: | ---: |
+| 20 | 18,019.6 | 18,829.0 | — | 18,424.3 |
+| 50 | 21,802.0 | 22,585.4 | — | 22,193.7 |
+| 100 | 24,743.5 | 23,923.4 | 25,371.7 | 24,679.5 |
+| 200 | 23,168.3 | 25,502.3 | 25,149.6 | 24,606.7 |
+| 400 | 25,129.1 | 24,891.7 | 25,942.7 | 25,321.2 |
+| 600 | 24,647.8 | 24,019.3 | — | 24,333.6 |
+| 800 | 24,254.5 | 24,382.3 | — | 24,318.4 |
+| 1,000 | 25,702.9 | 26,004.3 | 25,385.1 | 25,697.4 |
+
+The highest mean was at 1,000 connections, but 400 reached about 98.5% of that throughput, and 100 reached about 96.0% using one quarter as many connections as 400. The results point to a practical knee around 100–400 connections rather than a sharply defined optimum; the small gaps among the larger pools were comparable to run-to-run variation. One checkout timeout occurred at pool size 50 in the second full sweep and was excluded from completed requests.
+
 The default local connection settings are `jdbc:postgresql://localhost:5433/benchmark`, username `benchmark`, and password `benchmark`. Compose binds only to localhost and maps host port 5433 to PostgreSQL's port 5432; override the host port with `BENCHMARK_DB_PORT`. Override the application connection settings with `BENCHMARK_JDBC_URL`, `BENCHMARK_DB_USER`, and `BENCHMARK_DB_PASSWORD` if needed.
 
 ## Sample output
