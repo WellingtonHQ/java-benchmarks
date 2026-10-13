@@ -92,6 +92,7 @@ public final class PoolSizingBenchmark {
         boolean sweep = false;
         boolean refine = false;
         boolean cloneRefine = false;
+        boolean compareThreads = false;
         Long requestedRttMs = null;
 
         for (String arg : args) {
@@ -103,6 +104,8 @@ public final class PoolSizingBenchmark {
                 refine = true;
             } else if (arg.equals("--clone-refine")) {
                 cloneRefine = true;
+            } else if (arg.equals("--compare-threads")) {
+                compareThreads = true;
             } else if (arg.startsWith("--simulated-rtt-ms=")) {
                 requestedRttMs = Long.parseLong(arg.substring("--simulated-rtt-ms=".length()));
             } else {
@@ -110,11 +113,16 @@ public final class PoolSizingBenchmark {
             }
         }
 
-        if ((sweep && refine) || (sweep && cloneRefine) || (refine && cloneRefine)) {
+        int scenarioModes = (sweep ? 1 : 0) + (refine ? 1 : 0) + (cloneRefine ? 1 : 0)
+                + (compareThreads ? 1 : 0);
+        if (scenarioModes > 1) {
             throw new IllegalArgumentException("Choose one sweep/refinement option at a time.");
         }
         if (cloneRefine && !wellisearch) {
             throw new IllegalArgumentException("--clone-refine requires --wellisearch.");
+        }
+        if (compareThreads && !wellisearch) {
+            throw new IllegalArgumentException("--compare-threads requires --wellisearch.");
         }
         if (requestedRttMs != null && !wellisearch) {
             throw new IllegalArgumentException("--simulated-rtt-ms is only valid with --wellisearch.");
@@ -125,12 +133,13 @@ public final class PoolSizingBenchmark {
             throw new IllegalArgumentException("Simulated RTT must be between 0 and 1,000 ms.");
         }
 
-        return new RunOptions(wellisearch, sweep, refine, cloneRefine, simulatedRttMs);
+        return new RunOptions(wellisearch, sweep, refine, cloneRefine, compareThreads, simulatedRttMs);
     }
 
     private static String usage() {
         return "Usage: java -jar virtual-thread-pool-sizing-1.0.0.jar "
-                + "[--sweep|--refine|--wellisearch [--refine|--clone-refine] [--simulated-rtt-ms=N]]";
+                + "[--sweep|--refine|--wellisearch "
+                + "[--refine|--clone-refine|--compare-threads] [--simulated-rtt-ms=N]]";
     }
 
     private static DatabaseSettings databaseSettings(boolean wellisearch) {
@@ -146,6 +155,14 @@ public final class PoolSizingBenchmark {
 
     private static List<Scenario> scenariosFor(RunOptions options) {
         if (options.wellisearch()) {
+            if (options.compareThreads()) {
+                return List.of(
+                        new Scenario("Virtual threads, pool 8", ThreadType.VIRTUAL, 8),
+                        new Scenario("Platform threads, pool 8", ThreadType.PLATFORM, 8),
+                        new Scenario("Virtual threads, pool 56", ThreadType.VIRTUAL, 56),
+                        new Scenario("Platform threads, pool 56", ThreadType.PLATFORM, 56)
+                );
+            }
             if (options.cloneRefine()) {
                 return virtualThreadScenarios(LIVE_CLONE_REFINE_POOL_SIZES);
             }
@@ -433,6 +450,7 @@ public final class PoolSizingBenchmark {
             boolean sweep,
             boolean refine,
             boolean cloneRefine,
+            boolean compareThreads,
             long simulatedRttMs) {
     }
 

@@ -137,6 +137,23 @@ One full sweep was followed by two high-pool refinements, all with 1,000 virtual
 
 For this cloned workload, **pool size 56 was the sweet spot among the tested sizes**: it averaged 1,156.3 TPS, versus 1,070.9 at 48 and 1,046.7 at 64. Throughput declined at larger pools, consistent with the 4-CPU database becoming saturated. The 20 ms injected delay per SQL round trip is part of this result; other query costs or latency targets can move the optimum. Pool-checkout timeouts were retried and excluded from TPS; there were 10 and 12 timeouts at pool 56 in its two refinement runs.
 
+To compare virtual threads with a fixed executor of 1,000 platform (OS) threads, run this **against the isolated clone only**:
+
+```powershell
+java -jar target/virtual-thread-pool-sizing-1.0.0.jar --wellisearch --compare-threads --simulated-rtt-ms=20
+```
+
+This compares both thread types at pool sizes 8 and 56 using the same index queries and simulated delay. Two trials produced:
+
+| Pool | Thread type | Trial 1 TPS | Trial 2 TPS | Mean TPS | Checkout timeouts, trials 1 / 2 |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 8 | Virtual | 176.8 | 176.7 | 176.8 | 818 / 800 |
+| 8 | Platform | 177.2 | 177.4 | 177.3 | 904 / 930 |
+| 56 | Virtual | 1,240.8 | 1,198.2 | 1,219.5 | 24 / 7 |
+| 56 | Platform | 1,241.0 | 1,230.1 | 1,235.6 | 302 / 295 |
+
+Throughput was effectively the same for both thread types; the platform-thread mean was about 1.3% higher at pool 56, a difference too small to call a winner from two trials. Platform threads had more pool-checkout timeouts, especially at pool 56. Those attempts were retried and excluded from TPS. The results show the main benefit of virtual threads here is handling the 1,000 blocked tasks without creating 1,000 OS threads, rather than increasing database throughput.
+
 The default synthetic PostgreSQL 16 setup remains available separately on localhost port 5433.
 
 The default local connection settings are `jdbc:postgresql://localhost:5433/benchmark`, username `benchmark`, and password `benchmark`. Compose binds only to localhost and maps host port 5433 to PostgreSQL's port 5432; override the host port with `BENCHMARK_DB_PORT`. Override the application connection settings with `BENCHMARK_JDBC_URL`, `BENCHMARK_DB_USER`, and `BENCHMARK_DB_PASSWORD` if needed.
