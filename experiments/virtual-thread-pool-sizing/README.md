@@ -156,6 +156,51 @@ Throughput was effectively the same for both thread types; the platform-thread m
 
 The default synthetic PostgreSQL 16 setup remains available separately on localhost port 5433.
 
+## Memory and executor-queue comparison
+
+`RequestComparison` models **finite requests**, with 1,000 outstanding request slots. Each completion submits one replacement. This differs from the original long-lived worker loops: a small executor can process the whole workload instead of having its first workers loop forever while the remaining tasks never start.
+
+Each scenario runs in a fresh JVM, with identical `-Xms64m -Xmx256m -Xss1m -XX:+UseG1GC -XX:NativeMemoryTracking=summary` settings. All use the isolated 4-CPU/8-GiB clone and a 56-connection pool, two real index queries, and 20 ms simulated DB delay after each query. An optional external-I/O delay occurs **before acquiring a DB connection**. This delay models a blocking downstream call; it is a sleep, not an actual HTTP/network impairment test.
+
+Build with `mvn clean package`, then use PowerShell 7 and a JDK providing `java` and `jcmd`:
+
+```powershell
+.\scripts\compare-memory.ps1 -Trials 2 -Modes @('virtual','platform200') -Delays @(0,100,500)
+```
+
+The script targets the clone automatically, reverses executor order in the second trial, samples Windows working set (resident memory), private process memory, and OS-thread count every second during measurement, and samples JVM native thread-memory accounting once per trial. JVM startup, warmup, and shutdown are excluded from process-memory averages. Database memory is not part of Java-process memory. Temporary stdout/stderr logs preserve each trial's result. All scenarios use a 5-second warmup and 30-second measurement.
+
+This finite-request profile counts only requests whose execution starts and finishes during measurement; in-flight requests crossing either boundary are excluded. That introduces boundary bias for slower requests, and these short closed-loop trials are exploratory rather than a statistically controlled capacity or fairness study. Hikari checkout is not guaranteed to serve requests in submission order.
+
+### Virtual threads versus 200 OS workers
+
+These values average two trials per cell. Queue and checkout waits are means for successfully completed requests, not percentiles or deadline guarantees.
+
+| External I/O per request | Executor | TPS | Private MiB | Resident MiB | OS threads | Queue wait ms | DB checkout wait ms | Request latency ms |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 ms | Virtual | 880.7 | 189.5 | 117.5 | 62 | 0.07 | 1,019.3 | 1,080.6 |
+| 0 ms | 200 OS workers | 912.2 | 207.4 | 123.5 | 245 | 871.0 | 2.1 | 934.3 |
+| 100 ms | Virtual | 880.0 | 195.4 | 123.5 | 62 | 0.07 | 931.8 | 1,094.1 |
+| 100 ms | 200 OS workers | 908.1 | 206.6 | 122.7 | 245 | 874.8 | 50.4 | 1,093.5 |
+| 500 ms | Virtual | 818.2 | 192.1 | 118.3 | 62 | 0.07 | 611.2 | 1,179.9 |
+| 500 ms | 200 OS workers | 346.4 | 210.0 | 123.5 | 245 | 2,269.1 | 0.04 | 2,836.3 |
+
+At 500 ms external I/O, virtual-thread trials measured 877.1 and 759.3 TPS; 200-worker trials measured 346.5 and 346.3 TPS. Virtual threads averaged **2.36× throughput** and lower end-to-end latency. At 0/100 ms external I/O, the 200-worker executor was already large enough to feed the database and virtual threads did not increase throughput. Private process memory was lower with virtual threads, but the resident-memory gap was modest and the 100 ms virtual-thread run used slightly more resident memory. This does not establish that every application will use less total memory with virtual threads.
+
+### Native stack costs and the 1,000-worker baseline
+
+In the first pair of no-external-I/O trials, the 1,000-worker executor averaged 187.5 MiB resident and 291.8 MiB private process memory, versus 119.6 MiB resident and 191.4 MiB private for virtual threads. Native Memory Tracking showed about **1,043 MiB reserved / 72.6 MiB committed** in the JVM's `Thread` category for 1,000 OS workers, versus **57.2 MiB reserved / 3.5 MiB committed** for virtual threads. The 200-worker executor used about **240.8 MiB reserved / 16.1 MiB committed**. Reserved address space is not consumed physical RAM, and the JVM `Thread` category excludes virtual-thread stack chunks, which live in the heap. OS-thread counts include JVM service threads and virtual-thread carrier threads, not just request workers.
+
+### Where requests wait and when they time out
+
+With 200 workers and 1,000 outstanding requests, most pending requests initially wait in the executor's queue. With virtual threads, each request is scheduled quickly in this test and its wait is primarily at connection checkout. That moves the waiting; it does not eliminate the database limit or the end-to-end request deadline.
+
+`Executors.newFixedThreadPool` uses an unbounded queue and **does not automatically expire queued tasks**. A client, server framework, or explicit deadline/cancellation policy must enforce that timeout. Hikari's checkout timeout starts when `getConnection()` is called, so executor-queue time is not included. An HTTP client's timeout can also leave server work queued or running unless cancellation is propagated.
+
+The benchmark records whether a successful request started more than one second after submission; it does not expire those requests. In the 500 ms / 200-worker trials, all 10,400 and 10,393 measured successes crossed that queue-wait threshold; none did with virtual threads. Virtual requests can still exceed a one-second end-to-end deadline while waiting at the DB.
+
+Checkout timeouts were 115 and 118 for the 200-worker/no-external-I/O trials, and zero for the paired virtual-thread trials and both 100/500 ms comparisons. The initial 1,000-worker/no-external-I/O trials had 929 and 921 checkout timeouts. Consequently, latency statistics for successful requests can hide starved requests; compare failure counts alongside TPS and latency. Retries maintain the closed-loop load, rather than represent production deadline handling.
+
 The default local connection settings are `jdbc:postgresql://localhost:5433/benchmark`, username `benchmark`, and password `benchmark`. Compose binds only to localhost and maps host port 5433 to PostgreSQL's port 5432; override the host port with `BENCHMARK_DB_PORT`. Override the application connection settings with `BENCHMARK_JDBC_URL`, `BENCHMARK_DB_USER`, and `BENCHMARK_DB_PASSWORD` if needed.
 
 ## Sample output
