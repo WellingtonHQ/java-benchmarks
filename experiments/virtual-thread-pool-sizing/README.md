@@ -58,6 +58,43 @@ Two full sweeps tested all eight pool sizes; a third refinement run retested 100
 
 The highest mean was at 1,000 connections, but 400 reached about 98.5% of that throughput, and 100 reached about 96.0% using one quarter as many connections as 400. The results point to a practical knee around 100–400 connections rather than a sharply defined optimum; the small gaps among the larger pools were comparable to run-to-run variation. One checkout timeout occurred at pool size 50 in the second full sweep and was excluded from completed requests.
 
+## Wellisearch live-index mode
+
+Live mode reads the running Wellisearch PostgreSQL database directly. It uses only `SELECT` statements, sets each Hikari session read-only, and does not write search logs or update hit counters. The Java process needs `WELLISEARCH_JDBC_URL`, `WELLISEARCH_DB_USER`, and `WELLISEARCH_DB_PASSWORD`; the following PowerShell snippet loads those values from the running `wellisearch` container without printing them or saving them in the repository:
+
+```powershell
+$values = docker inspect wellisearch --format '{{json .Config.Env}}' | ConvertFrom-Json
+$wellisearchEnv = @{}
+foreach ($entry in $values) {
+    $name, $value = $entry -split '=', 2
+    $wellisearchEnv[$name] = $value
+}
+$env:WELLISEARCH_JDBC_URL = "jdbc:postgresql://localhost:$($wellisearchEnv['POSTGRES_PORT'])/$($wellisearchEnv['POSTGRES_DB'])"
+$env:WELLISEARCH_DB_USER = $wellisearchEnv['POSTGRES_USER']
+$env:WELLISEARCH_DB_PASSWORD = $wellisearchEnv['POSTGRES_PASSWORD']
+java -jar target/virtual-thread-pool-sizing-1.0.0.jar --wellisearch --simulated-rtt-ms=20
+```
+
+Each live request runs a full-text lookup through `chunks_tsv_gin` and a nearest-neighbor lookup through `chunks_vec_hnsw`, using query phrases from the Wellisearch benchmark set and vectors loaded from existing chunks. These are real JDBC/TCP queries to the host-mapped PostgreSQL port. A fixed 20 ms delay is added after each SQL statement while its connection remains checked out, simulating two database round trips (40 ms total) per request on top of the local Docker network latency. The live sweep keeps 1,000 virtual tasks in flight and tests pool sizes 2, 4, 8, 12, 16, 24, and 32; `--wellisearch --refine` retests 24, 32, 40, and 48. The largest tested pool is capped at 48 for this shared database, which has `max_connections=100`.
+
+One full live sweep and two refinement runs were completed against the index (about 12,000 pages and 153,000 chunks at the time). The first refinement retested 8, 16, 24, and 32; the second tested 24, 32, 40, and 48. The mean is over the available repetitions; low-pool sizes have one or two runs, while 24 and 32 have three.
+
+| Pool size | Full sweep | Refine 1 | Refine 2 | Mean TPS |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 40.7 | — | — | 40.7 |
+| 4 | 81.2 | — | — | 81.2 |
+| 8 | 164.5 | 165.6 | — | 165.1 |
+| 12 | 247.7 | — | — | 247.7 |
+| 16 | 330.3 | 330.4 | — | 330.4 |
+| 24 | 493.5 | 495.0 | 493.5 | 494.0 |
+| 32 | 623.7 | 654.4 | 655.1 | 644.4 |
+| 40 | — | — | 814.1 | 814.1 |
+| 48 | — | — | 887.0 | 887.0 |
+
+Throughput continued to rise through the safe 48-connection cap, so this live test did not locate a plateau or a definitive sweet spot. Pool 48 was fastest among the tested sizes; the next step would require a larger connection budget, which was not tested against this shared database. Pool-checkout timeouts are reported to stderr, excluded from TPS, and retried by their workers; counts were 990/948/826/625/624/387/31 for pools 2/4/8/12/16/24/32 in the full sweep, 860/604/280/68 for 8/16/24/32 in refine 1, and 429/227/80/0 for 24/32/40/48 in refine 2.
+
+The live benchmark deliberately does not call the full `fn_search_local` ranking function under concurrency: a single read-only probe with a null query vector took 9.4 seconds. The test isolates its underlying GIN and HNSW index paths instead, avoiding a high-load run of that much more expensive function.
+
 The default local connection settings are `jdbc:postgresql://localhost:5433/benchmark`, username `benchmark`, and password `benchmark`. Compose binds only to localhost and maps host port 5433 to PostgreSQL's port 5432; override the host port with `BENCHMARK_DB_PORT`. Override the application connection settings with `BENCHMARK_JDBC_URL`, `BENCHMARK_DB_USER`, and `BENCHMARK_DB_PASSWORD` if needed.
 
 ## Sample output
