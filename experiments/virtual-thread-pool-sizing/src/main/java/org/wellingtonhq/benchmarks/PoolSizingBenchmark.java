@@ -30,7 +30,9 @@ public final class PoolSizingBenchmark {
     private static final List<Integer> SWEEP_POOL_SIZES = List.of(20, 50, 100, 200, 400, 600, 800, 1_000);
     private static final List<Integer> REFINE_POOL_SIZES = List.of(100, 200, 400, 1_000);
     private static final List<Integer> LIVE_POOL_SIZES = List.of(2, 4, 8, 12, 16, 24, 32);
+    private static final List<Integer> LIVE_COPY_SWEEP_POOL_SIZES = List.of(2, 4, 8, 12, 16, 24, 32, 40, 48);
     private static final List<Integer> LIVE_REFINE_POOL_SIZES = List.of(24, 32, 40, 48);
+    private static final List<Integer> LIVE_CLONE_REFINE_POOL_SIZES = List.of(40, 48, 56, 64, 72, 80);
     private static final List<String> LIVE_FTS_QUERIES = List.of(
             "marginalia search API documentation",
             "RDAP registration data access protocol",
@@ -89,6 +91,7 @@ public final class PoolSizingBenchmark {
         boolean wellisearch = false;
         boolean sweep = false;
         boolean refine = false;
+        boolean cloneRefine = false;
         Long requestedRttMs = null;
 
         for (String arg : args) {
@@ -98,6 +101,8 @@ public final class PoolSizingBenchmark {
                 sweep = true;
             } else if (arg.equals("--refine")) {
                 refine = true;
+            } else if (arg.equals("--clone-refine")) {
+                cloneRefine = true;
             } else if (arg.startsWith("--simulated-rtt-ms=")) {
                 requestedRttMs = Long.parseLong(arg.substring("--simulated-rtt-ms=".length()));
             } else {
@@ -105,8 +110,11 @@ public final class PoolSizingBenchmark {
             }
         }
 
-        if (sweep && refine) {
-            throw new IllegalArgumentException("Choose either --sweep or --refine, not both.");
+        if ((sweep && refine) || (sweep && cloneRefine) || (refine && cloneRefine)) {
+            throw new IllegalArgumentException("Choose one sweep/refinement option at a time.");
+        }
+        if (cloneRefine && !wellisearch) {
+            throw new IllegalArgumentException("--clone-refine requires --wellisearch.");
         }
         if (requestedRttMs != null && !wellisearch) {
             throw new IllegalArgumentException("--simulated-rtt-ms is only valid with --wellisearch.");
@@ -117,12 +125,12 @@ public final class PoolSizingBenchmark {
             throw new IllegalArgumentException("Simulated RTT must be between 0 and 1,000 ms.");
         }
 
-        return new RunOptions(wellisearch, sweep, refine, simulatedRttMs);
+        return new RunOptions(wellisearch, sweep, refine, cloneRefine, simulatedRttMs);
     }
 
     private static String usage() {
         return "Usage: java -jar virtual-thread-pool-sizing-1.0.0.jar "
-                + "[--sweep|--refine|--wellisearch [--refine] [--simulated-rtt-ms=N]]";
+                + "[--sweep|--refine|--wellisearch [--refine|--clone-refine] [--simulated-rtt-ms=N]]";
     }
 
     private static DatabaseSettings databaseSettings(boolean wellisearch) {
@@ -138,7 +146,13 @@ public final class PoolSizingBenchmark {
 
     private static List<Scenario> scenariosFor(RunOptions options) {
         if (options.wellisearch()) {
-            return virtualThreadScenarios(options.refine() ? LIVE_REFINE_POOL_SIZES : LIVE_POOL_SIZES);
+            if (options.cloneRefine()) {
+                return virtualThreadScenarios(LIVE_CLONE_REFINE_POOL_SIZES);
+            }
+            if (options.refine()) {
+                return virtualThreadScenarios(LIVE_REFINE_POOL_SIZES);
+            }
+            return virtualThreadScenarios(options.sweep() ? LIVE_COPY_SWEEP_POOL_SIZES : LIVE_POOL_SIZES);
         }
         if (options.sweep()) {
             return virtualThreadScenarios(SWEEP_POOL_SIZES);
@@ -414,7 +428,12 @@ public final class PoolSizingBenchmark {
     private record Scenario(String name, ThreadType threadType, int poolSize) {
     }
 
-    private record RunOptions(boolean wellisearch, boolean sweep, boolean refine, long simulatedRttMs) {
+    private record RunOptions(
+            boolean wellisearch,
+            boolean sweep,
+            boolean refine,
+            boolean cloneRefine,
+            long simulatedRttMs) {
     }
 
     private record DatabaseSettings(String jdbcUrl, String username, String password) {

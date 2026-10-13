@@ -75,7 +75,7 @@ $env:WELLISEARCH_DB_PASSWORD = $wellisearchEnv['POSTGRES_PASSWORD']
 java -jar target/virtual-thread-pool-sizing-1.0.0.jar --wellisearch --simulated-rtt-ms=20
 ```
 
-Each live request runs a full-text lookup through `chunks_tsv_gin` and a nearest-neighbor lookup through `chunks_vec_hnsw`, using query phrases from the Wellisearch benchmark set and vectors loaded from existing chunks. These are real JDBC/TCP queries to the host-mapped PostgreSQL port. A fixed 20 ms delay is added after each SQL statement while its connection remains checked out, simulating two database round trips (40 ms total) per request on top of the local Docker network latency. The live sweep keeps 1,000 virtual tasks in flight and tests pool sizes 2, 4, 8, 12, 16, 24, and 32; `--wellisearch --refine` retests 24, 32, 40, and 48. The largest tested pool is capped at 48 for this shared database, which has `max_connections=100`.
+Each live request runs a full-text lookup through `chunks_tsv_gin` and a nearest-neighbor lookup through `chunks_vec_hnsw`, using query phrases from the Wellisearch benchmark set and vectors loaded from existing chunks. These are real JDBC/TCP queries to the host-mapped PostgreSQL port. A fixed 20 ms delay is added after each SQL statement while its connection remains checked out, simulating two database round trips (40 ms total) per request on top of the local Docker network latency. The live mode keeps 1,000 virtual tasks in flight. Plain `--wellisearch` uses pool sizes 2–32 for the shared database; `--wellisearch --refine` tests 24, 32, 40, and 48.
 
 One full live sweep and two refinement runs were completed against the index (about 12,000 pages and 153,000 chunks at the time). The first refinement retested 8, 16, 24, and 32; the second tested 24, 32, 40, and 48. The mean is over the available repetitions; low-pool sizes have one or two runs, while 24 and 32 have three.
 
@@ -94,6 +94,50 @@ One full live sweep and two refinement runs were completed against the index (ab
 Throughput continued to rise through the safe 48-connection cap, so this live test did not locate a plateau or a definitive sweet spot. Pool 48 was fastest among the tested sizes; the next step would require a larger connection budget, which was not tested against this shared database. Pool-checkout timeouts are reported to stderr, excluded from TPS, and retried by their workers; counts were 990/948/826/625/624/387/31 for pools 2/4/8/12/16/24/32 in the full sweep, 860/604/280/68 for 8/16/24/32 in refine 1, and 429/227/80/0 for 24/32/40/48 in refine 2.
 
 The live benchmark deliberately does not call the full `fn_search_local` ranking function under concurrency: a single read-only probe with a null query vector took 9.4 seconds. The test isolates its underlying GIN and HNSW index paths instead, avoiding a high-load run of that much more expensive function.
+
+## Isolated Wellisearch clone
+
+For a more controlled CPU/RAM benchmark, create a separate PostgreSQL 18 + pgvector container with a filtered copy of the Wellisearch index:
+
+```powershell
+.\scripts\clone-wellisearch.ps1
+java -jar target/virtual-thread-pool-sizing-1.0.0.jar --wellisearch --sweep --simulated-rtt-ms=20
+```
+
+The script reads the live connection settings from the running Wellisearch container without printing them, takes a read-only custom-format dump of only `pages` and `chunks` (including their indexes), restores those tables into the clone, and points the current PowerShell session at the clone. It does not copy search/crawl logs or provider state. The clone runs on localhost port 5434 with **4 CPUs and 8 GiB RAM**; it uses its own Docker volume and the local-only `benchmark-copy-only` database password. Override the host port with `WELLISEARCH_COPY_DB_PORT` before running the script.
+
+The clone-only `--sweep` profile tests pool sizes 2, 4, 8, 12, 16, 24, 32, 40, and 48. To continue upward on the isolated container, use `--wellisearch --clone-refine --simulated-rtt-ms=20`, which tests 40, 48, 56, 64, 72, and 80; the live shared database profile intentionally stays below that range. To refresh the copy, first remove only the clone's container and volume, then rerun the script:
+
+```powershell
+docker compose -p wellisearch-benchmark-copy -f docker-compose.wellisearch-copy.yml down -v
+.\scripts\clone-wellisearch.ps1
+```
+
+The clone restored **12,198 pages and 153,205 chunks**, including the GIN full-text, trigram, and HNSW vector indexes. It was verified with a 4-CPU limit and an 8-GiB memory limit.
+
+### Constrained-clone sweep results
+
+One full sweep was followed by two high-pool refinements, all with 1,000 virtual tasks and a 20 ms simulated delay after each of the two index queries.
+
+| Pool size | Full sweep | High refine 1 | High refine 2 | Mean TPS |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 43.5 | — | — | 43.5 |
+| 4 | 87.5 | — | — | 87.5 |
+| 8 | 176.8 | — | — | 176.8 |
+| 12 | 266.5 | — | — | 266.5 |
+| 16 | 355.6 | — | — | 355.6 |
+| 24 | 535.9 | — | — | 535.9 |
+| 32 | 715.4 | — | — | 715.4 |
+| 40 | 895.0 | 894.7 | 894.1 | 894.6 |
+| 48 | 1,074.0 | 1,067.5 | 1,071.3 | 1,070.9 |
+| 56 | — | 1,148.4 | 1,164.1 | 1,156.3 |
+| 64 | — | 1,060.7 | 1,032.6 | 1,046.7 |
+| 72 | — | 1,015.0 | 1,032.2 | 1,023.6 |
+| 80 | — | 1,009.1 | 1,017.5 | 1,013.3 |
+
+For this cloned workload, **pool size 56 was the sweet spot among the tested sizes**: it averaged 1,156.3 TPS, versus 1,070.9 at 48 and 1,046.7 at 64. Throughput declined at larger pools, consistent with the 4-CPU database becoming saturated. The 20 ms injected delay per SQL round trip is part of this result; other query costs or latency targets can move the optimum. Pool-checkout timeouts were retried and excluded from TPS; there were 10 and 12 timeouts at pool 56 in its two refinement runs.
+
+The default synthetic PostgreSQL 16 setup remains available separately on localhost port 5433.
 
 The default local connection settings are `jdbc:postgresql://localhost:5433/benchmark`, username `benchmark`, and password `benchmark`. Compose binds only to localhost and maps host port 5433 to PostgreSQL's port 5432; override the host port with `BENCHMARK_DB_PORT`. Override the application connection settings with `BENCHMARK_JDBC_URL`, `BENCHMARK_DB_USER`, and `BENCHMARK_DB_PASSWORD` if needed.
 
